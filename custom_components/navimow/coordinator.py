@@ -103,8 +103,22 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 token = await self.oauth_session.async_get_valid_token()
             else:
                 token = self.oauth_session.token
+        except ConfigEntryAuthFailed:
+            # 确定性认证失败（refresh_token 缺失或被服务端拒绝）→ 直接上报，让 HA 引导用户重新认证
+            raise
         except Exception as err:
-            raise ConfigEntryAuthFailed(f"Token refresh failed: {err}") from err
+            # 瞬态错误（网络超时、DNS 等）→ 不立即触发重新认证流程。
+            # 尝试沿用缓存中的 access_token；若缓存也不可用才升级为认证失败。
+            _LOGGER.warning(
+                "Token refresh failed (likely transient), falling back to cached token: %s", err
+            )
+            cached = getattr(self.oauth_session, "token", None)
+            if cached and cached.get("access_token"):
+                token = cached
+            else:
+                raise ConfigEntryAuthFailed(
+                    f"Token refresh failed and no cached token available: {err}"
+                ) from err
         if not token or not token.get("access_token"):
             raise ConfigEntryAuthFailed("No access token after refresh")
         access_token = token["access_token"]
